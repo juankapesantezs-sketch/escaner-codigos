@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Escáner de códigos</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 12px; background: #f4f6f8; color: #1d2630; }
+  h1 { font-size: 20px; margin: 4px 0 12px; }
+  .card { background: #fff; border-radius: 12px; padding: 12px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  video { width: 100%; border-radius: 10px; background: #000; max-height: 55vh; object-fit: cover; }
+  label { display: block; font-size: 14px; font-weight: 600; margin: 10px 0 4px; }
+  input, select, textarea { width: 100%; font-size: 16px; padding: 10px; border: 1px solid #c5ccd3; border-radius: 8px; background: #fff; }
+  textarea { min-height: 60px; resize: vertical; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  button { width: 100%; font-size: 17px; padding: 13px; border: 0; border-radius: 10px; background: #1565c0; color: #fff; font-weight: 600; margin-top: 8px; }
+  button.sec { background: #e3e8ee; color: #1d2630; }
+  button:disabled { opacity: .5; }
+  #estado { font-size: 15px; min-height: 22px; margin-top: 8px; }
+  .ok { color: #1b7f3b; font-weight: 600; }
+  .err { color: #b3261e; font-weight: 600; }
+  small { color: #5b6670; }
+</style>
+</head>
+<body>
+<h1>Escáner de códigos</h1>
+
+<div class="card">
+  <video id="video" playsinline muted></video>
+  <div class="row">
+    <button id="btnIniciar" type="button">Iniciar cámara</button>
+    <button id="btnDetener" type="button" class="sec">Detener</button>
+  </div>
+  <small>Admite EAN-13 y Code 128. Apunta la cámara al código de barras.</small>
+</div>
+
+<form id="form" class="card" autocomplete="off">
+  <label for="codigo">Código leído</label>
+  <input id="codigo" name="codigo" inputmode="numeric" placeholder="Escanea o escribe el código" required>
+
+  <div class="row">
+    <div>
+      <label for="tipo">Tipo</label>
+      <select id="tipo" name="tipo" required>
+        <option value="Bodega">Bodega</option>
+        <option value="Medidor">Medidor</option>
+      </select>
+    </div>
+    <div>
+      <label for="formato">Formato</label>
+      <select id="formato" name="formato">
+        <option value="EAN-13">EAN-13</option>
+        <option value="Code 128">Code 128</option>
+      </select>
+    </div>
+  </div>
+
+  <label for="cantidad">Cantidad o lectura</label>
+  <input id="cantidad" name="cantidad" inputmode="decimal" placeholder="Ej.: 1 o 1523.4" required>
+
+  <label for="usuario">Usuario</label>
+  <input id="usuario" name="usuario" placeholder="Tu nombre">
+
+  <label for="notas">Notas</label>
+  <textarea id="notas" name="notas" placeholder="Opcional"></textarea>
+
+  <button id="btnGuardar" type="submit">Guardar</button>
+  <div id="estado" aria-live="polite"></div>
+</form>
+
+<div class="card">
+  <label for="token">Token de seguridad</label>
+  <input id="token" type="password" placeholder="Se guarda solo en este teléfono">
+  <button id="btnToken" type="button" class="sec">Guardar token</button>
+  <small>Se pide una vez y queda guardado solo en este dispositivo.</small>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script>
+const ENDPOINT = 'https://script.google.com/macros/s/AKfycbxiD3Ig9eCkdSRXoSVh6Ms-wjQE7ufVd109diMUZ7sn61q6YNGYgzwOzCfFA9jQeZFV/exec';
+const HOJA = 'Escaneos';
+const TOKEN_KEY = 'escaner_token';
+
+const video = document.getElementById('video');
+const estado = document.getElementById('estado');
+const codigoInput = document.getElementById('codigo');
+const formatoSel = document.getElementById('formato');
+const tokenInput = document.getElementById('token');
+let reader = null;
+let controls = null;
+
+function setEstado(msg, cls) {
+  estado.textContent = msg;
+  estado.className = cls || '';
+}
+
+// Token: se guarda solo en el teléfono
+tokenInput.value = localStorage.getItem(TOKEN_KEY) || '';
+document.getElementById('btnToken').addEventListener('click', () => {
+  const t = tokenInput.value.trim();
+  if (!t) { setEstado('Escribe el token.', 'err'); return; }
+  localStorage.setItem(TOKEN_KEY, t);
+  setEstado('Token guardado en este dispositivo.', 'ok');
+});
+
+function formatoDetectado(result) {
+  const f = result.getBarcodeFormat();
+  if (f === ZXing.BarcodeFormat.EAN_13) return 'EAN-13';
+  if (f === ZXing.BarcodeFormat.CODE_128) return 'Code 128';
+  return null;
+}
+
+async function iniciarCamara() {
+  if (!window.ZXing) { setEstado('No se pudo cargar el lector. Revisa la conexión.', 'err'); return; }
+  if (reader) return;
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.CODE_128]);
+  hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+  reader = new ZXing.BrowserMultiFormatReader(hints, 300);
+  try {
+    controls = await reader.decodeFromConstraints(
+      { video: { facingMode: { ideal: 'environment' } }, audio: false },
+      video,
+      (result, err) => {
+        if (result) {
+          const fmt = formatoDetectado(result);
+          if (!fmt) return;
+          codigoInput.value = result.getText();
+          formatoSel.value = fmt;
+          setEstado('Código leído: ' + result.getText(), 'ok');
+          if (navigator.vibrate) navigator.vibrate(120);
+        }
+      }
+    );
+    setEstado('Cámara activa. Apunta al código.', '');
+  } catch (e) {
+    reader = null;
+    setEstado('No se pudo abrir la cámara: ' + e.message + '. Revisa los permisos del navegador.', 'err');
+  }
+}
+
+function detenerCamara() {
+  if (controls) { controls.stop(); controls = null; }
+  reader = null;
+  setEstado('Cámara detenida.', '');
+}
+
+document.getElementById('btnIniciar').addEventListener('click', iniciarCamara);
+document.getElementById('btnDetener').addEventListener('click', detenerCamara);
+
+document.getElementById('form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const token = localStorage.getItem(TOKEN_KEY) || '';
+  if (!token) { setEstado('Primero guarda el token en la parte de abajo.', 'err'); return; }
+
+  const btn = document.getElementById('btnGuardar');
+  btn.disabled = true;
+  setEstado('Guardando...', '');
+
+  const payload = {
+    token: token,
+    hoja: HOJA,
+    fecha: new Date().toISOString(),
+    tipo: document.getElementById('tipo').value,
+    codigo: codigoInput.value.trim(),
+    formato: formatoSel.value,
+    cantidad: document.getElementById('cantidad').value.trim(),
+    usuario: document.getElementById('usuario').value.trim(),
+    notas: document.getElementById('notas').value.trim()
+  };
+
+  try {
+    const resp = await fetch(ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      setEstado('Guardado en la hoja.', 'ok');
+      codigoInput.value = '';
+      document.getElementById('cantidad').value = '';
+      document.getElementById('notas').value = '';
+    } else {
+      setEstado('No se guardó: ' + (data.error || 'error desconocido'), 'err');
+    }
+  } catch (e) {
+    setEstado('Error de conexión: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

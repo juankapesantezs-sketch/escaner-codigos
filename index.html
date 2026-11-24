@@ -10,6 +10,8 @@
   h1 { font-size: 20px; margin: 4px 0 12px; }
   .card { background: #fff; border-radius: 12px; padding: 12px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
   video { width: 100%; border-radius: 10px; background: #000; max-height: 55vh; object-fit: cover; }
+  .visor { position: relative; }
+  #marco { position: absolute; left: 8%; right: 8%; top: 30%; height: 40%; border: 3px solid #ffeb3b; border-radius: 8px; pointer-events: none; box-shadow: 0 0 0 9999px rgba(0,0,0,.25); }
   label { display: block; font-size: 14px; font-weight: 600; margin: 10px 0 4px; }
   input, select, textarea { width: 100%; font-size: 16px; padding: 10px; border: 1px solid #c5ccd3; border-radius: 8px; background: #fff; }
   textarea { min-height: 60px; resize: vertical; }
@@ -28,12 +30,18 @@
 <h1>Escáner de códigos</h1>
 
 <div class="card">
-  <video id="video" playsinline muted></video>
+  <div class="visor">
+    <video id="video" playsinline muted></video>
+    <div id="marco"></div>
+  </div>
   <div class="row">
     <button id="btnIniciar" type="button">Iniciar cámara</button>
     <button id="btnDetener" type="button" class="sec">Detener</button>
   </div>
-  <small>Admite EAN-13 y Code 128. Apunta la cámara al código de barras.</small>
+  <small>Admite EAN-13 y Code 128. Acerca el código a 10-20 cm, con buena luz y sin reflejos.</small>
+  <label for="foto" style="margin-top:12px">¿La cámara no lee? Toma una foto del código</label>
+  <input id="foto" type="file" accept="image/*" capture="environment">
+  <small>La app lee el código desde la foto.</small>
 </div>
 
 <form id="form" class="card" autocomplete="off">
@@ -121,7 +129,7 @@ async function iniciarCamara() {
   reader = new ZXing.BrowserMultiFormatReader(hints, 300);
   try {
     controls = await reader.decodeFromConstraints(
-      { video: { facingMode: { ideal: 'environment' } }, audio: false },
+      { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false },
       video,
       (result, err) => {
         if (result) {
@@ -140,6 +148,31 @@ async function iniciarCamara() {
     setEstado('No se pudo abrir la cámara: ' + e.message + '. Revisa los permisos del navegador.', 'err');
   }
 }
+
+// Lectura desde una foto tomada con la cámara del teléfono
+document.getElementById('foto').addEventListener('change', async (ev) => {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  if (!window.ZXing) { setEstado('No se pudo cargar el lector. Revisa la conexión.', 'err'); return; }
+  setEstado('Leyendo la foto...', '');
+  const url = URL.createObjectURL(file);
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.CODE_128]);
+  hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+  try {
+    const r = await new ZXing.BrowserMultiFormatReader(hints).decodeFromImageUrl(url);
+    const fmt = formatoDetectado(r);
+    if (!fmt) { setEstado('Se leyó un código, pero no es EAN-13 ni Code 128.', 'err'); return; }
+    codigoInput.value = r.getText();
+    formatoSel.value = fmt;
+    setEstado('Código leído de la foto: ' + r.getText(), 'ok');
+  } catch (e) {
+    setEstado('No se pudo leer el código de la foto. Acércate más, con buena luz, y vuelve a intentar.', 'err');
+  } finally {
+    URL.revokeObjectURL(url);
+    ev.target.value = '';
+  }
+});
 
 function detenerCamara() {
   if (controls) { controls.stop(); controls = null; }
